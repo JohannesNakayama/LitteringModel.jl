@@ -1,0 +1,175 @@
+---
+title: "Littering Model Analysis"
+author: "Johannes Nakayama"
+date: "17 10 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# load libraries ---
+library(tidyverse)
+library(magrittr)
+library(ggpubr)
+library(igraph)
+library(viridis)
+
+# load helper functions ---
+source("helpers.R")
+
+# plot specifications ---
+SAVE <- TRUE
+RESOLUTION_DPI <- 300
+THEME_DESIGN <- 2
+
+# create directories ---
+dir.create("graphics", showWarnings = FALSE)
+dir.create(file.path("graphics", "pdf"), showWarnings = FALSE)
+dir.create(file.path("graphics", "png"), showWarnings = FALSE)
+```
+
+```{r}
+# config data ---
+cfg_garbage_collection <- arrow::read_feather(file.path("..", "experiments", "garbage_collection", "configs.feather"))
+cfg_garbage_collection %<>% 
+  mutate(
+    Config = as.factor(Config),
+    Nodes = as.numeric(Nodes),
+    N0 = as.numeric(N0),
+    K = as.numeric(K),
+    AgentCount = as.numeric(AgentCount),
+    InitialTrash = as.numeric(InitialTrash),
+    InitialLitterers = as.numeric(InitialLitterers),
+    GarbageCollection = as.numeric(GarbageCollection),
+    Iterations = as.numeric(Iterations)
+  )
+
+# mdata garbage collection ---
+dir <- file.path("..", "experiments", "garbage_collection")
+archive_filename <- file.path(dir, "mdata.7z")
+unpack_7z_command <- paste0("7z x ", archive_filename)
+system(unpack_7z_command)
+mdata_garbage_collection <- data.frame()
+for (config_key in 1:dim(cfg_garbage_collection)[1]) {
+  config_nr <- stringr::str_pad(config_key, 2, "left", "0")
+  filename <- paste0("config_", config_nr, "_mdata.feather")
+  df <- arrow::read_feather(filename)
+  df$Config <- paste0("config_", config_nr)
+  mdata_garbage_collection %<>% bind_rows(df)
+}
+system("rm *.feather")
+mdata_garbage_collection %<>%
+  tibble() %>% 
+  mutate(
+    Config = as.factor(Config),
+    Replicate = as.numeric(Replicate),
+    Step = as.numeric(Step),
+    NewTrash = as.numeric(NewTrash),
+    TrashAggregated = as.numeric(TrashAggregated)
+  )
+
+# reset ---
+rm(dir, archive_filename, unpack_7z_command, config_key, config_nr, filename, df)
+```
+
+
+```{r}
+# generics ---
+color_scheme <- viridis::viridis(31)
+
+# data formatting ---
+mdata_garbage_collection %>% 
+  inner_join(cfg_garbage_collection %>% select(Config, GarbageCollection), by = "Config") %>% 
+  group_by(Config, GarbageCollection, Step) %>% 
+  summarize(TrashAggregatedMean = mean(TrashAggregated), NewTrashMean = mean(NewTrash)) %>% 
+  ungroup() -> tmp1
+
+mdata_garbage_collection %>% 
+  filter(Step == max(Step)) %>% 
+  inner_join(cfg_garbage_collection %>% select(Config, GarbageCollection)) %>% 
+  group_by(GarbageCollection) %>% 
+  summarize(TrashAggregatedMean = mean(TrashAggregated)) %>% 
+  ungroup() -> tmp2
+
+# plotting ---
+tmp1 %>% 
+  ggplot(aes(x = Step, y = TrashAggregatedMean, color = as.factor(GarbageCollection))) +
+    geom_line(size = 1, alpha = 0.5) +
+    scale_color_manual(values = color_scheme, breaks = c(0, 10, 20, 30)) +
+    labs(
+      title = "Accumulated garbage over time",
+      x = "Step", y = "Mean cumulated garbage",
+      color = "Garbage collection per space"
+    ) +
+    theme_thesis(plot_margin = 15, design = 2) +
+    theme(
+      legend.pos = "bottom",
+      axis.title.x = element_text(margin = margin(t = 10, b = 0))
+    ) +
+    NULL -> p1
+
+tmp2 %>% 
+  ggplot(aes(x = GarbageCollection, y = TrashAggregatedMean)) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  labs(
+    title = "Outcomes for different levels of garbage collection",
+    x = "Garbage collection per space", y = "Cumulated garbage after simulation"
+  ) +
+  scale_x_continuous(breaks = seq(0, 30, by = 5)) +
+  theme_thesis(plot_margin = 15, design = 2) -> p2
+
+ggarrange(p1, p2, labels = c("A", "B"), ncol = 1) %>% 
+  annotate_figure(
+    bottom = text_grob("Aggregated over 5 replicates", hjust = -0.5, vjust = 1)
+  ) +
+  theme_thesis_arrange(plot_margin = 15, design = 2)
+
+# saving ---
+if (SAVE) {save_plot(filename = "garbage_accumulation", width = 8, height = 8, dpi = 300)}
+
+# reset ---
+rm(color_scheme, p1, p2, tmp1, tmp2)
+```
+
+```{r}
+# generics ---
+color_scheme <- viridis::viridis(31)
+
+# data formatting ---
+mdata_garbage_collection %>% 
+  inner_join(cfg_garbage_collection %>% select(Config, GarbageCollection), by = "Config") %>% 
+  group_by(Config, GarbageCollection, Step) %>% 
+  summarize(TrashAggregatedMean = mean(TrashAggregated), NewTrashMean = mean(NewTrash)) %>% 
+  ungroup() %>% 
+  mutate(GreaterThan = GarbageCollection > 5) -> tmp
+
+tmp$GreaterThan %<>%
+  factor(levels = c("FALSE", "TRUE")) %>%
+  recode("FALSE" = "garbage collection <= 5", "TRUE" = "garbage collection > 5")
+
+# plotting ---
+tmp %>% 
+  ggplot(aes(x = Step, y = NewTrashMean, color = as.factor(GarbageCollection))) +
+    geom_line(size = 1, alpha = 0.5) +
+    scale_color_manual(values = color_scheme, breaks = c(0, 10, 20, 30)) +
+    facet_wrap(. ~ GreaterThan) +
+    labs(
+      title = "Average littering per step",
+      x = "Step",
+      y = "Number of littering agents (mean)",
+      color = "Garbage collection per space",
+      caption = "Aggregated over 5 replicates."
+    ) +
+    theme_thesis(plot_margin = 15, design = 2) +
+    theme(legend.position = "bottom") +
+    NULL
+
+# saving ---
+if (SAVE) {save_plot(filename = "average_littering_per_step", width = 8, height = 4, dpi = RESOLUTION_DPI)}
+
+# reset ---
+rm(color_scheme, tmp)
+```
+
